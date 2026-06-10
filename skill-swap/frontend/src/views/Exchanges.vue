@@ -47,10 +47,18 @@
             <span v-if="exchange.schedule.startTime && exchange.schedule.endTime" class="schedule-time">
               {{ formatDateTime(exchange.schedule.startTime) }} - {{ formatDateTime(exchange.schedule.endTime) }}
             </span>
-            <el-button v-if="exchange.schedule.status === 'negotiating' && exchange.schedule.proposedBy !== myId"
+            <el-button
+              v-if="exchange.schedule.status === 'negotiating'
+                && exchange.schedule.startTime
+                && exchange.schedule.endTime
+                && exchange.schedule.proposedBy !== myId
+                && !exchange.schedule.confirmedBy?.includes(myId)"
               type="primary" link size="small" @click="confirmSchedule(exchange)">
               确认时间
             </el-button>
+            <span v-else-if="exchange.schedule.confirmedBy?.includes(myId) && exchange.schedule.status !== 'confirmed'" class="schedule-confirmed-mark">
+              ✓ 你已确认时间
+            </span>
           </div>
 
           <div class="exchange-footer">
@@ -103,6 +111,18 @@
             </span>
             <span v-else class="schedule-time schedule-time-empty">
               暂未约定时间
+            </span>
+            <el-button
+              v-if="exchange.schedule?.status === 'negotiating'
+                && exchange.schedule?.startTime
+                && exchange.schedule?.endTime
+                && exchange.schedule?.proposedBy !== myId
+                && !exchange.schedule?.confirmedBy?.includes(myId)"
+              type="primary" link size="small" @click="confirmSchedule(exchange)">
+              确认时间
+            </el-button>
+            <span v-else-if="exchange.schedule?.confirmedBy?.includes(myId) && exchange.schedule?.status !== 'confirmed'" class="schedule-confirmed-mark">
+              ✓ 你已确认时间
             </span>
           </div>
 
@@ -194,6 +214,9 @@
               <div class="conflict-name">
                 {{ conflict.username }}
                 <span class="conflict-side">{{ conflict.side === 'me' || conflict.side === 'initiator' ? '(你的日程)' : '(对方日程)' }}</span>
+                <span :class="['conflict-status-tag', conflict.scheduleStatus === 'confirmed' ? 'status-confirmed' : 'status-negotiating']">
+                  {{ conflict.scheduleStatus === 'confirmed' ? '已确认' : '协商中' }}
+                </span>
               </div>
               <div class="conflict-time">
                 {{ formatDateTime(conflict.startTime) }} - {{ formatDateTime(conflict.endTime) }}
@@ -688,6 +711,13 @@ async function saveScheduleAsNegotiating() {
   font-style: italic;
 }
 
+.exchange-schedule .schedule-confirmed-mark {
+  margin-left: auto;
+  color: #52c41a;
+  font-size: 12px;
+  font-weight: 500;
+}
+
 .negotiating-schedule {
   background: #e6f7ff;
 }
@@ -755,6 +785,28 @@ async function saveScheduleAsNegotiating() {
   color: #999;
   font-size: 12px;
   margin-left: 4px;
+}
+
+.conflict-status-tag {
+  display: inline-block;
+  padding: 0 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  margin-left: 6px;
+  line-height: 18px;
+}
+
+.conflict-status-tag.status-confirmed {
+  background: #fff1f0;
+  color: #f5222d;
+  border: 1px solid #ffa39e;
+}
+
+.conflict-status-tag.status-negotiating {
+  background: #fff7e6;
+  color: #d46b08;
+  border: 1px solid #ffd591;
 }
 
 .conflict-time {

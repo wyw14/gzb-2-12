@@ -116,6 +116,9 @@
               <div class="conflict-name">
                 {{ conflict.username }}
                 <span class="conflict-side">{{ conflict.side === 'me' ? '(你的日程)' : '(对方日程)' }}</span>
+                <span :class="['conflict-status-tag', conflict.scheduleStatus === 'confirmed' ? 'status-confirmed' : 'status-negotiating']">
+                  {{ conflict.scheduleStatus === 'confirmed' ? '已确认' : '协商中' }}
+                </span>
               </div>
               <div class="conflict-time">
                 {{ formatDateTime(conflict.startTime) }} - {{ formatDateTime(conflict.endTime) }}
@@ -585,6 +588,28 @@ function resetExchangeForm() {
   color: #999;
   font-size: 12px;
   margin-left: 4px;
+}
+
+.conflict-status-tag {
+  display: inline-block;
+  padding: 0 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  margin-left: 6px;
+  line-height: 18px;
+}
+
+.conflict-status-tag.status-confirmed {
+  background: #fff1f0;
+  color: #f5222d;
+  border: 1px solid #ffa39e;
+}
+
+.conflict-status-tag.status-negotiating {
+  background: #fff7e6;
+  color: #d46b08;
+  border: 1px solid #ffd591;
 }
 
 .conflict-time {

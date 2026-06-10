@@ -298,8 +298,7 @@ function checkTimeConflicts(userId, startTime, endTime, excludeExchangeId = null
     (e.initiatorId === userId || e.partnerId === userId) &&
     e.status !== 'completed' &&
     e.schedule?.startTime &&
-    e.schedule?.endTime &&
-    e.schedule?.status === 'confirmed'
+    e.schedule?.endTime
   );
 
   const users = readJson('users.json');
@@ -318,6 +317,7 @@ function checkTimeConflicts(userId, startTime, endTime, excludeExchangeId = null
         avatar: otherUser?.avatar || '',
         startTime: exchange.schedule.startTime,
         endTime: exchange.schedule.endTime,
+        scheduleStatus: exchange.schedule.status,
         skills: exchange.skills
       });
     }
