@@ -361,24 +361,35 @@ app.post('/api/exchanges', authMiddleware, (req, res) => {
 
   let scheduleData = null;
   if (schedule?.startTime && schedule?.endTime) {
-    const myConflicts = checkTimeConflicts(req.user.id, schedule.startTime, schedule.endTime);
-    const partnerConflicts = checkTimeConflicts(partnerId, schedule.startTime, schedule.endTime);
+    if (schedule.status !== 'negotiating') {
+      const myConflicts = checkTimeConflicts(req.user.id, schedule.startTime, schedule.endTime);
+      const partnerConflicts = checkTimeConflicts(partnerId, schedule.startTime, schedule.endTime);
 
-    if (myConflicts.conflicts.length > 0 || partnerConflicts.conflicts.length > 0) {
-      return res.status(409).json({
-        error: '时间冲突',
-        conflicts: [
-          ...myConflicts.conflicts.map(c => ({ ...c, side: 'me' })),
-          ...partnerConflicts.conflicts.map(c => ({ ...c, side: 'partner' }))
-        ]
-      });
+      if (myConflicts.conflicts.length > 0 || partnerConflicts.conflicts.length > 0) {
+        return res.status(409).json({
+          error: '时间冲突',
+          conflicts: [
+            ...myConflicts.conflicts.map(c => ({ ...c, side: 'me' })),
+            ...partnerConflicts.conflicts.map(c => ({ ...c, side: 'partner' }))
+          ]
+        });
+      }
     }
 
     scheduleData = {
       startTime: schedule.startTime,
       endTime: schedule.endTime,
       status: schedule.status || 'negotiating',
-      proposedBy: req.user.id
+      proposedBy: req.user.id,
+      confirmedBy: [req.user.id]
+    };
+  } else if (schedule?.status === 'negotiating') {
+    scheduleData = {
+      startTime: null,
+      endTime: null,
+      status: 'negotiating',
+      proposedBy: req.user.id,
+      confirmedBy: []
     };
   }
 
@@ -419,7 +430,8 @@ app.put('/api/exchanges/:id/schedule', authMiddleware, (req, res) => {
       startTime: startTime || null,
       endTime: endTime || null,
       status: 'negotiating',
-      proposedBy: req.user.id
+      proposedBy: req.user.id,
+      confirmedBy: startTime && endTime ? [req.user.id] : []
     };
   } else if (startTime && endTime) {
     const myConflicts = checkTimeConflicts(exchange.initiatorId, startTime, endTime, exchange.id);
@@ -461,8 +473,25 @@ app.put('/api/exchanges/:id/confirm-schedule', authMiddleware, (req, res) => {
     return res.status(403).json({ error: '无权限修改' });
   }
 
-  if (!exchange.schedule) {
-    return res.status(400).json({ error: '暂无日程安排' });
+  if (!exchange.schedule || !exchange.schedule.startTime || !exchange.schedule.endTime) {
+    return res.status(400).json({ error: '暂无有效日程安排' });
+  }
+
+  if (exchange.schedule.proposedBy === req.user.id) {
+    return res.status(400).json({ error: '提议者无需再次确认' });
+  }
+
+  const myConflicts = checkTimeConflicts(exchange.initiatorId, exchange.schedule.startTime, exchange.schedule.endTime, exchange.id);
+  const partnerConflicts = checkTimeConflicts(exchange.partnerId, exchange.schedule.startTime, exchange.schedule.endTime, exchange.id);
+
+  if (myConflicts.conflicts.length > 0 || partnerConflicts.conflicts.length > 0) {
+    return res.status(409).json({
+      error: '确认时检测到时间冲突，请重新协商时间',
+      conflicts: [
+        ...myConflicts.conflicts.map(c => ({ ...c, side: 'initiator' })),
+        ...partnerConflicts.conflicts.map(c => ({ ...c, side: 'partner' }))
+      ]
+    });
   }
 
   if (!exchange.schedule.confirmedBy) {

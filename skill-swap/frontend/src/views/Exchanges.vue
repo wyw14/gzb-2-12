@@ -109,7 +109,7 @@
           <div class="exchange-footer">
             <span class="exchange-time">{{ formatTime(exchange.createdAt) }}</span>
             <div class="exchange-actions">
-              <el-button type="primary" @click="showScheduleDialog(exchange)">
+              <el-button type="primary" @click="openScheduleDialog(exchange)">
                 <el-icon><Edit /></el-icon>约定时间
               </el-button>
               <el-button @click="goToChat(exchange)">
@@ -204,6 +204,9 @@
       </div>
       <template #footer>
         <el-button @click="showScheduleDialog = false">取消</el-button>
+        <el-button type="warning" @click="saveScheduleAsNegotiating" :loading="submittingSchedule">
+          保存为待协商
+        </el-button>
         <el-button type="primary" @click="submitSchedule" :loading="submittingSchedule" :disabled="scheduleConflicts.length > 0">
           确认时间
         </el-button>
@@ -404,7 +407,7 @@ async function submitReview() {
   }
 }
 
-function showScheduleDialog(exchange) {
+function openScheduleDialog(exchange) {
   currentExchange.value = exchange
   scheduleForm.value = {
     startTime: exchange.schedule?.startTime || null,
@@ -415,7 +418,12 @@ function showScheduleDialog(exchange) {
 }
 
 async function onScheduleTimeChange() {
-  if (!scheduleForm.value.startTime || !scheduleForm.value.endTime || !currentExchange.value) {
+  if (!scheduleForm.value.startTime || !scheduleForm.value.endTime) {
+    scheduleConflicts.value = []
+    return
+  }
+
+  if (!currentExchange.value) {
     scheduleConflicts.value = []
     return
   }
@@ -424,6 +432,7 @@ async function onScheduleTimeChange() {
   const end = new Date(scheduleForm.value.endTime).getTime()
 
   if (start >= end) {
+    scheduleConflicts.value = []
     ElMessage.warning('结束时间必须晚于开始时间')
     return
   }
@@ -480,7 +489,32 @@ async function confirmSchedule(exchange) {
     ElMessage.success('已确认时间')
     await loadExchanges()
   } catch (e) {
-    ElMessage.error(e.message || '确认失败')
+    if (e.response?.status === 409) {
+      ElMessage.warning('确认时检测到冲突，请重新协商时间')
+      await loadExchanges()
+    } else {
+      ElMessage.error(e.response?.data?.error || e.message || '确认失败')
+    }
+  }
+}
+
+async function saveScheduleAsNegotiating() {
+  if (!currentExchange.value) return
+
+  try {
+    submittingSchedule.value = true
+    await exchangeAPI.updateSchedule(currentExchange.value.id, {
+      startTime: scheduleForm.value.startTime || null,
+      endTime: scheduleForm.value.endTime || null,
+      status: 'negotiating'
+    })
+    ElMessage.success('已保存为待协商状态')
+    showScheduleDialog.value = false
+    await loadExchanges()
+  } catch (e) {
+    ElMessage.error(e.message || '保存失败')
+  } finally {
+    submittingSchedule.value = false
   }
 }
 </script>

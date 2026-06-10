@@ -263,6 +263,7 @@ async function onTimeChange() {
   const end = new Date(exchangeForm.value.endTime).getTime()
 
   if (start >= end) {
+    conflicts.value = []
     ElMessage.warning('结束时间必须晚于开始时间')
     return
   }
