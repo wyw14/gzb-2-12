@@ -56,7 +56,10 @@ export const messageAPI = {
 export const exchangeAPI = {
   getExchanges: () => api.get('/exchanges'),
   createExchange: (data) => api.post('/exchanges', data),
-  confirmExchange: (id) => api.put(`/exchanges/${id}/confirm`)
+  confirmExchange: (id) => api.put(`/exchanges/${id}/confirm`),
+  checkConflict: (data) => api.post('/exchanges/check-conflict', data),
+  updateSchedule: (id, data) => api.put(`/exchanges/${id}/schedule`, data),
+  confirmSchedule: (id) => api.put(`/exchanges/${id}/confirm-schedule`)
 }
 
 export const reviewAPI = {

@@ -72,7 +72,7 @@
       </div>
     </div>
 
-    <el-dialog v-model="showExchangeDialog" title="发起技能交换" width="500px">
+    <el-dialog v-model="showExchangeDialog" title="发起技能交换" width="560px">
       <el-form :model="exchangeForm" label-position="top">
         <el-form-item label="你想教授的技能">
           <el-select v-model="exchangeForm.teachSkill" placeholder="选择你可以教的技能" style="width: 100%">
@@ -84,10 +84,52 @@
             <el-option v-for="s in otherTeachSkills" :key="s.id" :label="s.name" :value="s.name" />
           </el-select>
         </el-form-item>
+        <el-form-item label="约定交换时间">
+          <div class="time-selector">
+            <el-date-picker
+              v-model="exchangeForm.startTime"
+              type="datetime"
+              placeholder="选择开始时间"
+              style="width: 100%"
+              @change="onTimeChange"
+            />
+            <span class="time-to">至</span>
+            <el-date-picker
+              v-model="exchangeForm.endTime"
+              type="datetime"
+              placeholder="选择结束时间"
+              style="width: 100%"
+              @change="onTimeChange"
+            />
+          </div>
+          <div class="time-hint">可选：不填时间则保存为待协商状态</div>
+        </el-form-item>
+
+        <div v-if="conflicts.length > 0" class="conflict-section">
+          <div class="conflict-title">
+            <el-icon color="#f56c6c"><Warning /></el-icon>
+            <span>时间冲突</span>
+          </div>
+          <div v-for="(conflict, index) in conflicts" :key="index" class="conflict-item">
+            <el-avatar :src="conflict.avatar" :size="36" />
+            <div class="conflict-info">
+              <div class="conflict-name">
+                {{ conflict.username }}
+                <span class="conflict-side">{{ conflict.side === 'me' ? '(你的日程)' : '(对方日程)' }}</span>
+              </div>
+              <div class="conflict-time">
+                {{ formatDateTime(conflict.startTime) }} - {{ formatDateTime(conflict.endTime) }}
+              </div>
+            </div>
+          </div>
+        </div>
       </el-form>
       <template #footer>
         <el-button @click="showExchangeDialog = false">取消</el-button>
-        <el-button type="primary" @click="createExchange">确认发起</el-button>
+        <el-button @click="saveAsNegotiating">保存为待协商</el-button>
+        <el-button type="primary" @click="createExchange" :loading="submitting" :disabled="conflicts.length > 0">
+          确认发起
+        </el-button>
       </template>
     </el-dialog>
   </div>
@@ -100,7 +142,7 @@ import { messageAPI, skillAPI, exchangeAPI, authAPI } from '../api'
 import { useUserStore } from '../stores/user'
 import { ElMessage } from 'element-plus'
 import dayjs from 'dayjs'
-import { ChatDotRound, Promotion, Handshake } from '@element-plus/icons-vue'
+import { ChatDotRound, Promotion, Handshake, Warning } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -119,8 +161,12 @@ const myTeachSkills = ref([])
 const otherTeachSkills = ref([])
 const exchangeForm = ref({
   teachSkill: '',
-  learnSkill: ''
+  learnSkill: '',
+  startTime: null,
+  endTime: null
 })
+const conflicts = ref([])
+const checkingConflict = ref(false)
 
 onMounted(async () => {
   await loadConversations()
@@ -203,21 +249,125 @@ function formatTime(time) {
   }
 }
 
-async function createExchange() {
+function formatDateTime(time) {
+  return dayjs(time).format('YYYY-MM-DD HH:mm')
+}
+
+async function onTimeChange() {
+  if (!exchangeForm.value.startTime || !exchangeForm.value.endTime) {
+    conflicts.value = []
+    return
+  }
+
+  const start = new Date(exchangeForm.value.startTime).getTime()
+  const end = new Date(exchangeForm.value.endTime).getTime()
+
+  if (start >= end) {
+    ElMessage.warning('结束时间必须晚于开始时间')
+    return
+  }
+
   try {
-    await exchangeAPI.createExchange({
+    checkingConflict.value = true
+    const res = await exchangeAPI.checkConflict({
+      partnerId: currentUserId.value,
+      startTime: exchangeForm.value.startTime,
+      endTime: exchangeForm.value.endTime
+    })
+    conflicts.value = res.data.conflicts || []
+  } catch (e) {
+    conflicts.value = []
+  } finally {
+    checkingConflict.value = false
+  }
+}
+
+async function createExchange() {
+  if (!exchangeForm.value.teachSkill || !exchangeForm.value.learnSkill) {
+    ElMessage.warning('请选择教授和学习的技能')
+    return
+  }
+
+  const hasTime = exchangeForm.value.startTime && exchangeForm.value.endTime
+  if (hasTime && conflicts.value.length > 0) {
+    ElMessage.warning('时间存在冲突，请调整时间或保存为待协商')
+    return
+  }
+
+  try {
+    submitting.value = true
+    const data = {
       partnerId: currentUserId.value,
       skills: {
         teach: [exchangeForm.value.teachSkill],
         learn: [exchangeForm.value.learnSkill]
       }
-    })
+    }
+
+    if (hasTime) {
+      data.schedule = {
+        startTime: exchangeForm.value.startTime,
+        endTime: exchangeForm.value.endTime,
+        status: 'negotiating'
+      }
+    }
+
+    await exchangeAPI.createExchange(data)
     ElMessage.success('交换请求已发送')
     showExchangeDialog.value = false
-    exchangeForm.value = { teachSkill: '', learnSkill: '' }
+    resetExchangeForm()
   } catch (e) {
-    ElMessage.error('发起失败')
+    if (e.response?.status === 409) {
+      conflicts.value = e.response.data.conflicts || []
+      ElMessage.warning('时间存在冲突')
+    } else {
+      ElMessage.error(e.message || '发起失败')
+    }
+  } finally {
+    submitting.value = false
   }
+}
+
+async function saveAsNegotiating() {
+  if (!exchangeForm.value.teachSkill || !exchangeForm.value.learnSkill) {
+    ElMessage.warning('请选择教授和学习的技能')
+    return
+  }
+
+  try {
+    submitting.value = true
+    const data = {
+      partnerId: currentUserId.value,
+      skills: {
+        teach: [exchangeForm.value.teachSkill],
+        learn: [exchangeForm.value.learnSkill]
+      },
+      schedule: {
+        startTime: exchangeForm.value.startTime || null,
+        endTime: exchangeForm.value.endTime || null,
+        status: 'negotiating'
+      }
+    }
+
+    await exchangeAPI.createExchange(data)
+    ElMessage.success('已保存为待协商状态')
+    showExchangeDialog.value = false
+    resetExchangeForm()
+  } catch (e) {
+    ElMessage.error(e.message || '保存失败')
+  } finally {
+    submitting.value = false
+  }
+}
+
+function resetExchangeForm() {
+  exchangeForm.value = {
+    teachSkill: '',
+    learnSkill: '',
+    startTime: null,
+    endTime: null
+  }
+  conflicts.value = []
 }
 </script>
 
@@ -367,5 +517,77 @@ async function createExchange() {
 .chat-input-area {
   padding: 16px 24px;
   border-top: 1px solid #eee;
+}
+
+.time-selector {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.time-to {
+  color: #999;
+  font-size: 14px;
+  white-space: nowrap;
+}
+
+.time-hint {
+  margin-top: 8px;
+  font-size: 12px;
+  color: #999;
+}
+
+.conflict-section {
+  background: #fff1f0;
+  border: 1px solid #ffa39e;
+  border-radius: 8px;
+  padding: 16px;
+  margin-top: 8px;
+}
+
+.conflict-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  color: #f5222d;
+  margin-bottom: 12px;
+  font-size: 14px;
+}
+
+.conflict-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px;
+  background: white;
+  border-radius: 8px;
+  margin-bottom: 8px;
+}
+
+.conflict-item:last-child {
+  margin-bottom: 0;
+}
+
+.conflict-info {
+  flex: 1;
+}
+
+.conflict-name {
+  font-weight: 500;
+  color: #333;
+  font-size: 14px;
+  margin-bottom: 4px;
+}
+
+.conflict-side {
+  color: #999;
+  font-size: 12px;
+  margin-left: 4px;
+}
+
+.conflict-time {
+  font-size: 13px;
+  color: #666;
 }
 </style>

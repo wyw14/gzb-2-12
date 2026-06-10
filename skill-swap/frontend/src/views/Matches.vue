@@ -83,6 +83,84 @@
         </template>
       </el-empty>
     </div>
+
+    <el-dialog v-model="showExchangeDialog" title="发起技能交换" width="560px">
+      <div v-if="currentMatch" class="exchange-dialog-content">
+        <div class="exchange-user-info">
+          <el-avatar :src="currentMatch.user.avatar" :size="56" />
+          <div class="exchange-user-detail">
+            <div class="exchange-username">{{ currentMatch.user.username }}</div>
+            <div class="exchange-score">契合度 {{ currentMatch.score }}%</div>
+          </div>
+        </div>
+
+        <el-divider />
+
+        <div class="exchange-skills-preview">
+          <div class="skill-preview-col">
+            <div class="skill-preview-label">你将教授</div>
+            <div class="skill-preview-tags">
+              <span v-for="s in currentMatch.matchedSkills.iCanTeach" :key="s" class="skill-tag skill-teach">{{ s }}</span>
+            </div>
+          </div>
+          <div class="skill-preview-col">
+            <div class="skill-preview-label">你将学习</div>
+            <div class="skill-preview-tags">
+              <span v-for="s in currentMatch.matchedSkills.iCanLearn" :key="s" class="skill-tag skill-learn">{{ s }}</span>
+            </div>
+          </div>
+        </div>
+
+        <el-form label-position="top" style="margin-top: 20px">
+          <el-form-item label="约定交换时间">
+            <div class="time-selector">
+              <el-date-picker
+                v-model="exchangeForm.startTime"
+                type="datetime"
+                placeholder="选择开始时间"
+                style="width: 100%"
+                @change="onTimeChange"
+              />
+              <span class="time-to">至</span>
+              <el-date-picker
+                v-model="exchangeForm.endTime"
+                type="datetime"
+                placeholder="选择结束时间"
+                style="width: 100%"
+                @change="onTimeChange"
+              />
+            </div>
+            <div class="time-hint">可选：不填时间则保存为待协商状态</div>
+          </el-form-item>
+        </el-form>
+
+        <div v-if="conflicts.length > 0" class="conflict-section">
+          <div class="conflict-title">
+            <el-icon color="#f56c6c"><Warning /></el-icon>
+            <span>时间冲突</span>
+          </div>
+          <div v-for="(conflict, index) in conflicts" :key="index" class="conflict-item">
+            <el-avatar :src="conflict.avatar" :size="36" />
+            <div class="conflict-info">
+              <div class="conflict-name">
+                {{ conflict.username }}
+                <span class="conflict-side">{{ conflict.side === 'me' ? '(你的日程)' : '(对方日程)' }}</span>
+              </div>
+              <div class="conflict-time">
+                {{ formatDateTime(conflict.startTime) }} - {{ formatDateTime(conflict.endTime) }}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="showExchangeDialog = false">取消</el-button>
+        <el-button @click="saveAsNegotiating">保存为待协商</el-button>
+        <el-button type="primary" @click="confirmCreateExchange" :loading="submitting" :disabled="conflicts.length > 0">
+          确认发起
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -91,7 +169,8 @@ import { ref, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { matchAPI, skillAPI, exchangeAPI } from '../api'
 import { ElMessage } from 'element-plus'
-import { Search, Refresh, User, ChatDotRound, Switch, Handshake } from '@element-plus/icons-vue'
+import dayjs from 'dayjs'
+import { Search, Refresh, User, ChatDotRound, Switch, Handshake, Warning } from '@element-plus/icons-vue'
 
 const router = useRouter()
 const matches = ref([])
@@ -100,6 +179,14 @@ const filters = ref({
   keyword: '',
   category: '',
   minScore: 30
+})
+const showExchangeDialog = ref(false)
+const currentMatch = ref(null)
+const submitting = ref(false)
+const conflicts = ref([])
+const exchangeForm = ref({
+  startTime: null,
+  endTime: null
 })
 
 const filteredMatches = computed(() => {
@@ -150,18 +237,113 @@ function goToChat(userId) {
   router.push(`/chat/${userId}`)
 }
 
-async function createExchange(match) {
+function createExchange(match) {
+  currentMatch.value = match
+  exchangeForm.value = {
+    startTime: null,
+    endTime: null
+  }
+  conflicts.value = []
+  showExchangeDialog.value = true
+}
+
+function formatDateTime(time) {
+  return dayjs(time).format('YYYY-MM-DD HH:mm')
+}
+
+async function onTimeChange() {
+  if (!exchangeForm.value.startTime || !exchangeForm.value.endTime) {
+    conflicts.value = []
+    return
+  }
+
+  const start = new Date(exchangeForm.value.startTime).getTime()
+  const end = new Date(exchangeForm.value.endTime).getTime()
+
+  if (start >= end) {
+    ElMessage.warning('结束时间必须晚于开始时间')
+    return
+  }
+
   try {
-    await exchangeAPI.createExchange({
-      partnerId: match.userId,
-      skills: {
-        teach: match.matchedSkills.iCanTeach,
-        learn: match.matchedSkills.iCanLearn
-      }
+    const res = await exchangeAPI.checkConflict({
+      partnerId: currentMatch.value.userId,
+      startTime: exchangeForm.value.startTime,
+      endTime: exchangeForm.value.endTime
     })
-    ElMessage.success('交换请求已发送')
+    conflicts.value = res.data.conflicts || []
   } catch (e) {
-    ElMessage.error('发起交换失败')
+    conflicts.value = []
+  }
+}
+
+async function confirmCreateExchange() {
+  if (!currentMatch.value) return
+
+  const hasTime = exchangeForm.value.startTime && exchangeForm.value.endTime
+  if (hasTime && conflicts.value.length > 0) {
+    ElMessage.warning('时间存在冲突，请调整时间或保存为待协商')
+    return
+  }
+
+  try {
+    submitting.value = true
+    const data = {
+      partnerId: currentMatch.value.userId,
+      skills: {
+        teach: currentMatch.value.matchedSkills.iCanTeach,
+        learn: currentMatch.value.matchedSkills.iCanLearn
+      }
+    }
+
+    if (hasTime) {
+      data.schedule = {
+        startTime: exchangeForm.value.startTime,
+        endTime: exchangeForm.value.endTime,
+        status: 'negotiating'
+      }
+    }
+
+    await exchangeAPI.createExchange(data)
+    ElMessage.success('交换请求已发送')
+    showExchangeDialog.value = false
+  } catch (e) {
+    if (e.response?.status === 409) {
+      conflicts.value = e.response.data.conflicts || []
+      ElMessage.warning('时间存在冲突')
+    } else {
+      ElMessage.error(e.message || '发起交换失败')
+    }
+  } finally {
+    submitting.value = false
+  }
+}
+
+async function saveAsNegotiating() {
+  if (!currentMatch.value) return
+
+  try {
+    submitting.value = true
+    const data = {
+      partnerId: currentMatch.value.userId,
+      skills: {
+        teach: currentMatch.value.matchedSkills.iCanTeach,
+        learn: currentMatch.value.matchedSkills.iCanLearn
+      },
+      schedule: {
+        startTime: exchangeForm.value.startTime || null,
+        endTime: exchangeForm.value.endTime || null,
+        status: 'negotiating'
+      }
+    }
+
+    await exchangeAPI.createExchange(data)
+    ElMessage.success('已保存为待协商状态')
+    showExchangeDialog.value = false
+  } catch (e) {
+    ElMessage.error(e.message || '保存失败')
+  } finally {
+    submitting.value = false
   }
 }
 </script>
@@ -307,5 +489,128 @@ async function createExchange(match) {
   display: flex;
   gap: 12px;
   justify-content: flex-end;
+}
+
+.exchange-dialog-content {
+  padding: 0 10px;
+}
+
+.exchange-user-info {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.exchange-user-detail {
+  flex: 1;
+}
+
+.exchange-username {
+  font-size: 18px;
+  font-weight: 600;
+  color: #333;
+  margin-bottom: 4px;
+}
+
+.exchange-score {
+  font-size: 14px;
+  color: #667eea;
+  font-weight: 500;
+}
+
+.exchange-skills-preview {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+
+.skill-preview-col {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.skill-preview-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: #666;
+}
+
+.skill-preview-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.time-selector {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.time-to {
+  color: #999;
+  font-size: 14px;
+  white-space: nowrap;
+}
+
+.time-hint {
+  margin-top: 8px;
+  font-size: 12px;
+  color: #999;
+}
+
+.conflict-section {
+  background: #fff1f0;
+  border: 1px solid #ffa39e;
+  border-radius: 8px;
+  padding: 16px;
+  margin-top: 8px;
+}
+
+.conflict-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  color: #f5222d;
+  margin-bottom: 12px;
+  font-size: 14px;
+}
+
+.conflict-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px;
+  background: white;
+  border-radius: 8px;
+  margin-bottom: 8px;
+}
+
+.conflict-item:last-child {
+  margin-bottom: 0;
+}
+
+.conflict-info {
+  flex: 1;
+}
+
+.conflict-name {
+  font-weight: 500;
+  color: #333;
+  font-size: 14px;
+  margin-bottom: 4px;
+}
+
+.conflict-side {
+  color: #999;
+  font-size: 12px;
+  margin-left: 4px;
+}
+
+.conflict-time {
+  font-size: 13px;
+  color: #666;
 }
 </style>

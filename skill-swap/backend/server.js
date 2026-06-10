@@ -282,8 +282,73 @@ app.get('/api/conversations', authMiddleware, (req, res) => {
   res.json(conversations);
 });
 
+function checkTimeConflicts(userId, startTime, endTime, excludeExchangeId = null) {
+  const exchanges = readJson('exchanges.json');
+  const conflicts = [];
+
+  const start = new Date(startTime).getTime();
+  const end = new Date(endTime).getTime();
+
+  if (start >= end) {
+    return { valid: false, error: '结束时间必须晚于开始时间', conflicts: [] };
+  }
+
+  const activeExchanges = exchanges.filter(e =>
+    e.id !== excludeExchangeId &&
+    (e.initiatorId === userId || e.partnerId === userId) &&
+    e.status !== 'completed' &&
+    e.schedule?.startTime &&
+    e.schedule?.endTime &&
+    e.schedule?.status === 'confirmed'
+  );
+
+  const users = readJson('users.json');
+
+  activeExchanges.forEach(exchange => {
+    const exStart = new Date(exchange.schedule.startTime).getTime();
+    const exEnd = new Date(exchange.schedule.endTime).getTime();
+
+    if (start < exEnd && end > exStart) {
+      const otherUserId = exchange.initiatorId === userId ? exchange.partnerId : exchange.initiatorId;
+      const otherUser = users.find(u => u.id === otherUserId);
+      conflicts.push({
+        exchangeId: exchange.id,
+        userId: otherUserId,
+        username: otherUser?.username || '未知用户',
+        avatar: otherUser?.avatar || '',
+        startTime: exchange.schedule.startTime,
+        endTime: exchange.schedule.endTime,
+        skills: exchange.skills
+      });
+    }
+  });
+
+  return { valid: conflicts.length === 0, conflicts };
+}
+
+app.post('/api/exchanges/check-conflict', authMiddleware, (req, res) => {
+  const { partnerId, startTime, endTime } = req.body;
+
+  if (!partnerId || !startTime || !endTime) {
+    return res.status(400).json({ error: '请指定交换对象和时间' });
+  }
+
+  const myConflicts = checkTimeConflicts(req.user.id, startTime, endTime);
+  const partnerConflicts = checkTimeConflicts(partnerId, startTime, endTime);
+
+  const allConflicts = [
+    ...myConflicts.conflicts.map(c => ({ ...c, side: 'me' })),
+    ...partnerConflicts.conflicts.map(c => ({ ...c, side: 'partner' }))
+  ];
+
+  res.json({
+    hasConflict: allConflicts.length > 0,
+    conflicts: allConflicts
+  });
+});
+
 app.post('/api/exchanges', authMiddleware, (req, res) => {
-  const { partnerId, skills } = req.body;
+  const { partnerId, skills, schedule } = req.body;
 
   if (!partnerId || !skills) {
     return res.status(400).json({ error: '请指定交换对象和交换技能' });
@@ -293,18 +358,128 @@ app.post('/api/exchanges', authMiddleware, (req, res) => {
   }
 
   const exchanges = readJson('exchanges.json');
+
+  let scheduleData = null;
+  if (schedule?.startTime && schedule?.endTime) {
+    const myConflicts = checkTimeConflicts(req.user.id, schedule.startTime, schedule.endTime);
+    const partnerConflicts = checkTimeConflicts(partnerId, schedule.startTime, schedule.endTime);
+
+    if (myConflicts.conflicts.length > 0 || partnerConflicts.conflicts.length > 0) {
+      return res.status(409).json({
+        error: '时间冲突',
+        conflicts: [
+          ...myConflicts.conflicts.map(c => ({ ...c, side: 'me' })),
+          ...partnerConflicts.conflicts.map(c => ({ ...c, side: 'partner' }))
+        ]
+      });
+    }
+
+    scheduleData = {
+      startTime: schedule.startTime,
+      endTime: schedule.endTime,
+      status: schedule.status || 'negotiating',
+      proposedBy: req.user.id
+    };
+  }
+
   const newExchange = {
     id: uuidv4(),
     initiatorId: req.user.id,
     partnerId: req.body.partnerId,
     skills: req.body.skills,
     status: 'pending',
+    schedule: scheduleData,
     createdAt: new Date().toISOString(),
     confirmedBy: []
   };
   exchanges.push(newExchange);
   writeJson('exchanges.json', exchanges);
   res.json(newExchange);
+});
+
+app.put('/api/exchanges/:id/schedule', authMiddleware, (req, res) => {
+  const exchanges = readJson('exchanges.json');
+  const index = exchanges.findIndex(e => e.id === req.params.id);
+  if (index === -1) {
+    return res.status(404).json({ error: '交换不存在' });
+  }
+
+  const exchange = exchanges[index];
+  if (exchange.initiatorId !== req.user.id && exchange.partnerId !== req.user.id) {
+    return res.status(403).json({ error: '无权限修改' });
+  }
+  if (exchange.status === 'completed') {
+    return res.status(400).json({ error: '已完成的交换不能修改时间' });
+  }
+
+  const { startTime, endTime, status } = req.body;
+
+  if (status === 'negotiating') {
+    exchange.schedule = {
+      startTime: startTime || null,
+      endTime: endTime || null,
+      status: 'negotiating',
+      proposedBy: req.user.id
+    };
+  } else if (startTime && endTime) {
+    const myConflicts = checkTimeConflicts(exchange.initiatorId, startTime, endTime, exchange.id);
+    const partnerConflicts = checkTimeConflicts(exchange.partnerId, startTime, endTime, exchange.id);
+
+    if (myConflicts.conflicts.length > 0 || partnerConflicts.conflicts.length > 0) {
+      return res.status(409).json({
+        error: '时间冲突',
+        conflicts: [
+          ...myConflicts.conflicts.map(c => ({ ...c, side: 'initiator' })),
+          ...partnerConflicts.conflicts.map(c => ({ ...c, side: 'partner' }))
+        ]
+      });
+    }
+
+    exchange.schedule = {
+      startTime,
+      endTime,
+      status: status || 'confirmed',
+      confirmedBy: [req.user.id],
+      proposedBy: req.user.id
+    };
+  }
+
+  exchanges[index] = exchange;
+  writeJson('exchanges.json', exchanges);
+  res.json(exchange);
+});
+
+app.put('/api/exchanges/:id/confirm-schedule', authMiddleware, (req, res) => {
+  const exchanges = readJson('exchanges.json');
+  const index = exchanges.findIndex(e => e.id === req.params.id);
+  if (index === -1) {
+    return res.status(404).json({ error: '交换不存在' });
+  }
+
+  const exchange = exchanges[index];
+  if (exchange.initiatorId !== req.user.id && exchange.partnerId !== req.user.id) {
+    return res.status(403).json({ error: '无权限修改' });
+  }
+
+  if (!exchange.schedule) {
+    return res.status(400).json({ error: '暂无日程安排' });
+  }
+
+  if (!exchange.schedule.confirmedBy) {
+    exchange.schedule.confirmedBy = [];
+  }
+
+  if (!exchange.schedule.confirmedBy.includes(req.user.id)) {
+    exchange.schedule.confirmedBy.push(req.user.id);
+  }
+
+  if (exchange.schedule.confirmedBy.length >= 2) {
+    exchange.schedule.status = 'confirmed';
+  }
+
+  exchanges[index] = exchange;
+  writeJson('exchanges.json', exchanges);
+  res.json(exchange);
 });
 
 app.put('/api/exchanges/:id/confirm', authMiddleware, (req, res) => {
